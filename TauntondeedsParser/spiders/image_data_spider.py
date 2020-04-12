@@ -1,6 +1,6 @@
 import scrapy
 import urllib.parse
-import requests
+import re
 
 from datetime import datetime
 from ..items import TauntondeedsparserItem
@@ -53,7 +53,7 @@ class ImageDataSpider(scrapy.Spider):
                 cost = self.get_cost(description)
                 street_address = self.get_street(description)
                 state = self.get_state(city)
-                zip_ = self.get_zip(state, city)
+                zip_ = self.get_zip(description)
 
                 yield {
                     'date': date,
@@ -163,10 +163,8 @@ class ImageDataSpider(scrapy.Spider):
         return form_data
 
     def get_state(self, city: str):
-        url = f'https://nominatim.openstreetmap.org/search?' + \
-            'city={city}&format=json&addressdetails=1&accept-language=eng'
-        response = requests.get(url)
-        return response.json()[0].get('address').get('state')
+        # edit for different page
+        return 'Massachusetts'
 
     def get_cost(self, description: str) -> str:
         try:
@@ -176,17 +174,15 @@ class ImageDataSpider(scrapy.Spider):
 
         return cost
 
-    def get_zip(self, state: str, city: str) -> str:
-        API = 'BhJUvvdtu1Eqtrywt9wpK5frtc423x4PoZ8SU6kXMeCY6efrNLyxy1LsBdHm3EWQ'
-        url = f'https://www.zipcodeapi.com/rest/{API}/city-zips.json/{city}/{state}'
-        response = requests.get(url)
-        try:
-            return response.json().get('zip_codes')[0]
-        except (KeyError, IndexError):
-            return None
+    def get_zip(self, description: str) -> str:
+        result = re.match(r'(^\d{5}$)|(^\d{9}$)|(^\d{5}-\d{4}$)', description)
+        if result is None:
+            return result
+        else:
+            return result.group(0)
 
     def get_street(self, description: str) -> str:
-        start = description.find('-')+3
+        start = description.find('-')+3  # 3 is len of '-G '
         if start == 2:
             start = 0
         end = description.find(',', start)
@@ -203,7 +199,7 @@ class ImageDataSpider(scrapy.Spider):
             return param
 
     def get_page_count(self, response):
-        # get grid of pages
+        # get len grid of pages
         page_count = len(response.css(
             'table#ctl00_cphMainContent_gvSearchResults tr.gridPager tr'
         )[0].css('td').getall())
