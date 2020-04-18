@@ -1,29 +1,44 @@
 import scrapy
 import urllib.parse
 import re
-
-from datetime import datetime
-from ..items import TauntondeedsparserItem
+import datetime
 
 
-class ImageDataSpider(scrapy.Spider):
+class ImageDataBase(scrapy.Spider):
+    @classmethod
+    def search_url(cls):
+        return "http://www.tauntondeeds.com/Searches/ImageSearch.aspx"
+
+    custom_settings = {
+        'ITEM_PIPELINES': {
+            'TauntondeedsParser.pipelines.TauntondeedsparserPipeline': 300
+        }
+    }
+
+
+class ImageDataSpider(ImageDataBase):
     name = 'image_data'
 
     start_urls = [
-        'http://www.tauntondeeds.com/Searches/ImageSearch.aspx'
+        ImageDataBase.search_url()
     ]
 
     def parse(self, response):
+        parser = ImageDataParser()
 
-        form_data = self.create_form_data(response, 0)
+        form_data = parser.create_form_data(response, 0)
 
         yield scrapy.FormRequest(
-            'http://www.tauntondeeds.com/Searches/ImageSearch.aspx',
+            ImageDataBase.search_url(),
             formdata=form_data,
-            callback=self.main_parser
+            callback=parser.search_documents
         )
 
-    def main_parser(self, response) -> dict:
+
+class ImageDataParser:
+    DEED = '101627'
+
+    def search_documents(self, response) -> dict:
         pages = self.get_page_count(response)
 
         for page in range(1, pages+1):
@@ -41,9 +56,7 @@ class ImageDataSpider(scrapy.Spider):
             if class_row == 'gridAltRow' or class_row == 'gridRow':
                 cols = row.css('td')
 
-                row_date = self._add_none(cols[1].css('::text').get())
-
-                date = datetime.strptime(row_date, '%m/%d/%Y')
+                date = self._add_none(cols[1].css('::text').get())
                 type_ = self._add_none(cols[2].css('::text').get())
                 book = self._add_none(cols[3].css('::text').get())
                 page_num = self._add_none(cols[4].css('::text').get())
@@ -52,7 +65,7 @@ class ImageDataSpider(scrapy.Spider):
                 description = self._add_none(cols[7].css('span::text').get())
                 cost = self.get_cost(description)
                 street_address = self.get_street(description)
-                state = self.get_state(city)
+                state = self._state(city)
                 zip_ = self.get_zip(description)
 
                 yield {
@@ -72,20 +85,22 @@ class ImageDataSpider(scrapy.Spider):
             else:
                 continue
 
-    def parse_input_form_data(self, response, form_data: dict) -> dict:
+    def parse_input_form_data(self, response) -> dict:
+        part_form_data = {}
         for input_ in response.css('input'):
             value = input_.css('::attr(value)').get()
 
             if value is None:
                 value = ''
 
-            form_data.update({
+            part_form_data.update({
                 input_.css('::attr(name)').get(): value
             })
 
-        return form_data
+        return part_form_data
 
-    def parse_script_form_data(self, response, form_data: dict) -> dict:
+    def parse_script_form_data(self, response) -> dict:
+        part_form_data = {}
         for script in response.css('script'):
             script_src = script.css('::attr(src)').get()
             if (script_src is not None
@@ -99,35 +114,38 @@ class ImageDataSpider(scrapy.Spider):
                     'compress=1&_TSM_CombinedScripts_='
 
                 param = param.replace(unnecessary_str, '')
-                form_data.update(
+                part_form_data.update(
                     {'ctl00_rsmScriptManager_HiddenField': param})
                 break
 
-        return form_data
+        return part_form_data
 
-    def add_additional_form_data(self, form_data: dict, page: int) -> dict:
-        DEED = '101627'
-
+    def edit_and_add_additional_form_data(self, page: int, form_data: dict) -> dict:
         START_TIME_1 = '2020-01-01'
         START_TIME_2 = '01/01/2020'
         START_TIME_3 = '2020-01-01-00-00-00'
 
-        END_TIME_1 = '2020-12-31'
-        END_TIME_2 = '12/31/2020'
-        END_TIME_3 = '2020-12-31-00-00-00'
+        today_date = datetime.date.today()
+        END_TIME_1 = datetime.datetime.strftime(today_date, '%Y-%m-%d')
+        END_TIME_2 = datetime.datetime.strftime(today_date, '%m/%d/%Y')
+        END_TIME_3 = datetime.datetime.strftime(
+            today_date, '%Y-%m-%d-00-00-00')
 
         if page > 1:
             form_data.update({'__EVENTTARGET':
                               'ctl00$cphMainContent$gvSearchResults',
-                              '__EVENTARGUMENT': f'Page${page}'})
-            del form_data['ctl00$cphMainContent$btnSearchLC']
+                              '__EVENTARGUMENT': 'Page${}'.format(page)})
+            try:
+                del form_data['ctl00$cphMainContent$btnSearchLC']
+            except KeyError:
+                pass
         else:
             form_data.update({'__EVENTTARGET': '',
                               '__EVENTARGUMENT': ''})
 
         form_data.update({'ctl00$cphMainCon' +
                           'tent$ddlLCDocumentType$vddlDropDown':
-                          DEED,
+                          self.DEED,
                           'ctl00$cphMainContent$txtLCSTartDate':
                           START_TIME_1,
                           'ctl00_cphMainContent_txtLCSTartDate_dateInput_text':
@@ -142,7 +160,7 @@ class ImageDataSpider(scrapy.Spider):
                           'ctl00_cphMainContent_txtRLStar' +
                           'tDate_dateInput_ClientState':
                           {"enabled": True, "emptyMessage": "",
-                              "minDateStr": "1/1/1900 0:0:0",
+                           "minDateStr": "1/1/1900 0:0:0",
                            "maxDateStr": "12/31/2099 0:0:0"}
                           })
 
@@ -153,17 +171,17 @@ class ImageDataSpider(scrapy.Spider):
         form_data = self._try_del_form_data(
             form_data, 'ctl00$cphMainContent$btnSearchRL')
 
-        return form_data
-
     def create_form_data(self, response, page: int) -> dict:
         form_data = {}
-        form_data = self.parse_input_form_data(response, form_data)
-        form_data = self.parse_script_form_data(response, form_data)
-        form_data = self.add_additional_form_data(form_data, page)
+        form_data.update(self.parse_input_form_data(response))
+        form_data.update(self.parse_script_form_data(response))
+
+        self.edit_and_add_additional_form_data(page, form_data)
+
         return form_data
 
-    def get_state(self, city: str):
-        # edit for different page
+    def _state(self, city: str):
+        # edit for different site
         return 'Massachusetts'
 
     def get_cost(self, description: str) -> str:
@@ -200,9 +218,13 @@ class ImageDataSpider(scrapy.Spider):
 
     def get_page_count(self, response):
         # get len grid of pages
-        page_count = len(response.css(
-            'table#ctl00_cphMainContent_gvSearchResults tr.gridPager tr'
-        )[0].css('td').getall())
+        try:
+            page_count = len(response.css(
+                'table#ctl00_cphMainContent_gvSearchResults tr.gridPager tr'
+            )[0].css('td').getall())
+        except (ValueError, KeyError, StopIteration):
+            page_count = 0
+
         return page_count
 
     def _try_del_form_data(self, form_data: dict, key: str) -> dict:
